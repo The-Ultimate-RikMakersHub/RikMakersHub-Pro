@@ -487,9 +487,41 @@ void clearInput() {
             <details>
                 <summary>🔌 Circuit Diagram & Code</summary>
                 <p>Columns to D0-D13, A4-A5. Layers to A0-A3 via transistors.</p>
-                <pre><code>int strobePin = 2, resetPin = 3;
-void setup() { pinMode(strobePin, OUTPUT); }
-void loop() { /* Audio processing & multiplexing */ }</code></pre>
+                <pre><code>// 4x4x4 LED Cube Audio Matrix Code
+// Mapping: 16 Columns (Anodes) and 4 Layers (Cathodes)
+
+int columns[16] = {13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0, A5, A4};
+int layers[4] = {A3, A2, A1, A0};
+int audioPin = A5; // Adjust based on your available pins
+
+void setup() {
+  for (int i = 0; i < 16; i++) pinMode(columns[i], OUTPUT);
+  for (int i = 0; i < 4; i++) pinMode(layers[i], OUTPUT);
+  pinMode(audioPin, INPUT);
+}
+
+void loop() {
+  int val = analogRead(audioPin); // Read sound level
+  int numLayers = map(val, 0, 1023, 0, 4); // Map to cube height
+
+  displayAudio(numLayers);
+}
+
+// Basic multiplexing display function
+void displayAudio(int level) {
+  for (int l = 0; l < 4; l++) {
+    // Turn off all layers
+    for (int i = 0; i < 4; i++) digitalWrite(layers[i], LOW);
+
+    // If current layer is within audio level, light up columns
+    if (l < level) {
+      for (int c = 0; c < 16; c++) digitalWrite(columns[c], LOW); // Low = ON for common cathode
+      digitalWrite(layers[l], HIGH); // Activate layer
+      delay(2); // Short delay for persistence of vision
+    }
+  }
+}
+</code></pre>
             </details>
         </div>
 
@@ -505,11 +537,68 @@ void loop() { /* Audio processing & multiplexing */ }</code></pre>
             <details>
                 <summary>🔌 Circuit Diagram & Code</summary>
                 <p>AS608 TX/RX to D2/D3. Relay to D4.</p>
-                <pre><code>#include &lt;Adafruit_Fingerprint.h&gt;
-#include &lt;SoftwareSerial.h&gt;
+                <pre><code>#include <Adafruit_Fingerprint.h>
+#include <SoftwareSerial.h>
+
+// Initialize SoftwareSerial for Fingerprint Sensor
+// Arduino Pin 2 (RX) to Sensor TX, Arduino Pin 3 (TX) to Sensor RX
 SoftwareSerial mySerial(2, 3);
-void setup() { /* Initialize sensor */ }
-void loop() { /* Biometric check */ }</code></pre>
+Adafruit_Fingerprint finger = Adafruit_Fingerprint(&mySerial);
+
+const int ignitionRelay = 4; // Relay pin connected to the ignition
+
+void setup() {
+  Serial.begin(9600);
+  while (!Serial); 
+  delay(100);
+
+  // Set the data rate for the sensor serial port
+  finger.begin(57600);
+  pinMode(ignitionRelay, OUTPUT);
+  digitalWrite(ignitionRelay, HIGH); // Set to LOW if your relay uses active-LOW logic
+  
+  if (finger.verifyPassword()) {
+    Serial.println("Found fingerprint sensor!");
+  } else {
+    Serial.println("Did not find fingerprint sensor :(");
+    while (1) { delay(1); }
+  }
+}
+
+void loop() {
+  getFingerprintIDez();
+  delay(50); // Don't ned to run this at full speed
+}
+
+int getFingerprintIDez() {
+  uint8_t p = finger.getImage();
+  if (p != FINGERPRINT_OK) return -1;
+
+  p = finger.image2Tz();
+  if (p != FINGERPRINT_OK) return -1;
+
+  p = finger.fingerFastSearch();
+  if (p != FINGERPRINT_OK) {
+    Serial.println("Fingerprint not found!");
+    return -1; // Access Denied
+  }
+
+  // Found a match!
+  Serial.print("Found ID #"); Serial.print(finger.fingerID);
+  Serial.print(" with confidence of "); Serial.println(finger.confidence);
+
+  // Trigger Ignition
+  digitalWrite(ignitionRelay, LOW); // Turn ON Ignition (Activates Relay)
+  Serial.println("Vehicle Started!");
+  
+  delay(5000); // Keep ignition on for 5 seconds (Modify as required for your starter cycle)
+
+  digitalWrite(ignitionRelay, HIGH); // Turn OFF Ignition 
+  Serial.println("Vehicle Off");
+
+  return finger.fingerID;
+}
+</code></pre>
             </details>
         </div>
 
@@ -525,11 +614,185 @@ void loop() { /* Biometric check */ }</code></pre>
             <details>
                 <summary>🔌 Circuit Diagram & Code</summary>
                 <p>INA219 to A5/A4. SD Card via SPI (D13, D12, D11, D4).</p>
-                <pre><code>#include &lt;LowPower.h&gt;
-#include &lt;SPI.h&gt;
-#include &lt;SD.h&gt;
-void setup() { SD.begin(4); }
-void loop() { /* Log data, sleep */ }</code></pre>
+                <pre><code>#include <Servo.h>
+#include <SPI.h>
+#include <SD.h>
+#include <Wire.h>
+#include <RTClib.h>
+#include <LowPower.h>
+#include <avr/sleep.h>
+
+// --- Pin Definitions ---
+const int LDR_Top = A0;
+const int LDR_Bottom = A1;
+const int LDR_Left = A2;
+const int LDR_Right = A3;
+const int ServoVertPin = 9;
+const int ServoHorizPin = 10;
+const int ChipSelect = 4;       // SD Card CS pin
+
+// --- Configuration ---
+int tolerance = 5;              // Tolerance to prevent servo jitter
+int stepSize = 1;               // Degrees to move servo per loop
+int maxAngleH = 160;            // Horizontal limits
+int minAngleH = 20;
+int maxAngleV = 160;            // Vertical limits
+int minAngleV = 20;
+int sleepCycles = 15;           // 15 x 8s = ~2 mins sleep between logs
+
+// --- Objects ---
+Servo servoH;
+Servo servoV;
+RTC_DS3231 rtc;
+File logFile;
+
+// --- State Variables ---
+int posH = 90;
+int posV = 90;
+unsigned long lastLogTime = 0;
+
+void setup() {
+  // Initialize communication
+  Serial.begin(9600);
+  Wire.begin();
+  
+  // Attach Servos
+  servoH.attach(ServoHorizPin);
+  servoV.attach(ServoVertPin);
+  
+  // Set initial positions
+  servoH.write(posH);
+  servoV.write(posV);
+  
+  // Initialize RTC
+  if (!rtc.begin()) {
+    while (1); // Halt if RTC missing
+  }
+  
+  // Initialize SD Card
+  if (!SD.begin(ChipSelect)) {
+    while (1); // Halt if SD missing
+  }
+
+  // Setup Watchdog Timer to wake every 8s
+  // (We'll loop this in deep sleep to save power)
+  setupWatchdog();
+}
+
+void loop() {
+  // 1. Wake Up & Initialize Peripherals
+  power_all_enable(); // Turn everything on
+  servoH.attach(ServoHorizPin);
+  servoV.attach(ServoVertPin);
+
+  // 2. Track Sun
+  sunTracker();
+
+  // 3. Log Data to SD Card
+  logDataToSD();
+
+  // 4. Power down and park servos
+  servoH.detach();
+  servoV.detach();
+
+  // 5. Enter Deep Sleep (Saves μA of power)
+  for (int i = 0; i < sleepCycles; i++) {
+    LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF);
+  }
+}
+
+void sunTracker() {
+  int top = analogRead(LDR_Top);
+  int bottom = analogRead(LDR_Bottom);
+  int left = analogRead(LDR_Left);
+  int right = analogRead(LDR_Right);
+
+  int avgV = (top + bottom) / 2;
+  int avgH = (left + right) / 2;
+
+  // Horizontal Tracking
+  if (abs(avgH - bottom) > tolerance) {
+    if (left > right) {
+      posH += stepSize;
+    } else {
+      posH -= stepSize;
+    }
+  }
+
+  // Vertical Tracking
+  if (abs(avgV - left) > tolerance) {
+    if (top > bottom) {
+      posV += stepSize;
+    } else {
+      posV -= stepSize;
+    }
+  }
+
+  // Constrain bounds
+  posH = constrain(posH, minAngleH, maxAngleH);
+  posV = constrain(posV, minAngleV, maxAngleV);
+
+  // Move Servos
+  servoH.write(posH);
+  servoV.write(posV);
+  
+  delay(15); // Allow time for servos to reach position
+}
+
+void logDataToSD() {
+  DateTime now = rtc.now();
+  
+  // Open file (or create it)
+  logFile = SD.open("tracker.csv", FILE_WRITE);
+  
+  if (logFile) {
+    // Timestamp
+    logFile.print(now.year(), DEC);
+    logFile.print('/');
+    logFile.print(now.month(), DEC);
+    logFile.print('/');
+    logFile.print(now.day(), DEC);
+    logFile.print(" ");
+    logFile.print(now.hour(), DEC);
+    logFile.print(':');
+    logFile.print(now.minute(), DEC);
+    logFile.print(':');
+    logFile.print(now.second(), DEC);
+    logFile.print(",");
+    
+    // Sensor values
+    logFile.print(analogRead(LDR_Top));
+    logFile.print(",");
+    logFile.print(analogRead(LDR_Bottom));
+    logFile.print(",");
+    logFile.print(analogRead(LDR_Left));
+    logFile.print(",");
+    logFile.print(analogRead(LDR_Right));
+    logFile.print(",");
+    
+    // Servo angles
+    logFile.print(posH);
+    logFile.print(",");
+    logFile.println(posV);
+    
+    logFile.close();
+  }
+}
+
+void setupWatchdog() {
+  // Clear WDT reset flag
+  MCUSR &= ~(1 << WDRF);
+  // Enter Watchdog Configuration Mode
+  WDTCSR |= (1 << WDCE) | (1 << WDE);
+  // Set Watchdog Interrupt Mode with an 8-Second interval
+  WDTCSR = (1 << WDIE) | (1 << WDP3) | (1 << WDP0);
+}
+
+// Watchdog Interrupt Service Routine
+ISR(WDT_vect) {
+  // WDT fires, wakes CPU up, and continues.
+}
+  </code></pre>
             </details>
         </div>
 
@@ -547,11 +810,136 @@ void loop() { /* Log data, sleep */ }</code></pre>
             <details>
                 <summary>🔌 Circuit Diagram & Code</summary>
                 <p>Relays to GPIO 26, 25, 33, 32. Buttons to 14, 12, 13, 15.</p>
-                <pre><code>#include &lt;WiFi.h&gt;
-#include &lt;ESPAsyncWebServer.h&gt;
+                <pre><code>#include <WiFi.h>
+#include <AsyncTCP.h>
+#include <ESPAsyncWebServer.h>
+
+// --- Configuration ---
+const char* ssid = "YOUR_WIFI_SSID";
+const char* password = "YOUR_WIFI_PASSWORD";
+
+// Pin definition for your appliance relay (Active LOW is common for relay modules)
+const int appliancePin = 26; 
+
+// --- Server Setup ---
 AsyncWebServer server(80);
-void setup() { /* Web server setup */ }
-void loop() {}</code></pre>
+
+// Embedded HTML/CSS/JS Web Interface
+const char index_html[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+  <title>ESP32 IoT Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: Arial, sans-serif; text-align: center; background-color: #121212; color: #ffffff; margin: 0; padding-top: 50px; }
+    .card { background-color: #1e1e1e; padding: 30px; border-radius: 10px; display: inline-block; box-shadow: 0 4px 8px rgba(0,0,0,0.3); }
+    h2 { margin-top: 0; color: #00e676; }
+    .status { font-size: 1.5rem; font-weight: bold; margin-bottom: 25px; }
+    .btn { background-color: #3700b3; color: white; padding: 15px 30px; font-size: 1.2rem; border: none; border-radius: 5px; cursor: pointer; transition: 0.3s; }
+    .btn:hover { background-color: #6200ea; }
+    .btn-off { background-color: #cf6679; }
+    .btn-off:hover { background-color: #b00020; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>Smart Appliance</h2>
+    <div class="status" id="stateText">Loading...</div>
+    <button class="btn" id="toggleBtn" onclick="toggleAppliance()">Toggle Device</button>
+  </div>
+  
+  <script>
+    let applianceState = false;
+
+    function updateUI() {
+      const btn = document.getElementById('toggleBtn');
+      const txt = document.getElementById('stateText');
+      if (applianceState) {
+        txt.innerText = "Status: ON";
+        txt.style.color = "#00e676";
+        btn.innerText = "Turn OFF";
+        btn.classList.add("btn-off");
+      } else {
+        txt.innerText = "Status: OFF";
+        txt.style.color = "#cf6679";
+        btn.innerText = "Turn ON";
+        btn.classList.remove("btn-off");
+      }
+    }
+
+    function toggleAppliance() {
+      let newState = !applianceState;
+      fetch('/toggle?state=' + (newState ? '1' : '0'))
+        .then(response => response.text())
+        .then(data => {
+          applianceState = newState;
+          updateUI();
+        });
+    }
+
+    // Initial state fetch on load
+    fetch('/state')
+      .then(response => response.json())
+      .then(data => {
+        applianceState = data.state;
+        updateUI();
+      });
+  </script>
+</body>
+</html>
+)rawliteral";
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(appliancePin, OUTPUT);
+  digitalWrite(appliancePin, HIGH); // Start with relay OFF (assuming active LOW)
+
+  // Connect to Wi-Fi
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.println("Connecting to Wi-Fi...");
+  }
+  
+  Serial.println("\nConnected!");
+  Serial.print("Access your dashboard at: http://");
+  Serial.println(WiFi.localIP());
+
+  // --- API Endpoints ---
+  
+  // Route to serve the web page
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send_P(200, "text/html", index_html);
+  });
+
+  // Route to handle appliance toggle
+  server.on("/toggle", HTTP_GET, [](AsyncWebServerRequest *request){
+    String stateStr = request->getParam("state")->value();
+    if (stateStr == "1") {
+      digitalWrite(appliancePin, LOW); // Turn ON (Active LOW)
+      applianceState = true;
+    } else {
+      digitalWrite(appliancePin, HIGH); // Turn OFF (Active LOW)
+      applianceState = false;
+    }
+    request->send(200, "text/plain", "OK");
+  });
+
+  // Route to get current state via JSON
+  server.on("/state", HTTP_GET, [](AsyncWebServerRequest *request){
+    String json = "{\"state\": " + String(applianceState ? "true" : "false") + "}";
+    request->send(200, "application/json", json);
+  });
+
+  // Start the server
+  server.begin();
+}
+
+void loop() {
+  // The asynchronous server handles requests in the background
+}
+</code></pre>
             </details>
         </div>
 
@@ -566,10 +954,145 @@ void loop() {}</code></pre>
             <details>
                 <summary>🔌 Circuit Diagram & Code</summary>
                 <p>OLED to 21/22. Lock to GPIO 4. Alarm to GPIO 5.</p>
-                <pre><code>#include &lt;WiFi.h&gt;
-void verifyDeveloperAuth() { /* MAC check */ }
-void setup() { verifyDeveloperAuth(); }
-void loop() {}</code></pre>
+                <pre><code>#include <WiFi.h>
+#include <Keypad.h>
+#include <mbedtls/aes.h>
+
+// --- Wi-Fi Configuration ---
+const char* ssid = "YOUR_WIFI_SSID";
+const char* password = "YOUR_WIFI_PASSWORD";
+
+// --- AES-128 Key (Must match the one used by your Authentication Server/App) ---
+// Note: In production, store this in ESP32 NVS securely
+const unsigned char aes_key[16] = { 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF };
+
+// --- Hardware Pins ---
+const int relayPin = 23;
+const int buzzerPin = 18;
+const int greenLed = 19;
+const int redLed = 21;
+
+// --- Keypad Configuration ---
+const byte ROWS = 4; 
+const byte COLS = 4; 
+char hexaKeys[ROWS][COLS] = {
+  {'1', '2', '3', 'A'},
+  {'4', '5', '6', 'B'},
+  {'7', '8', '9', 'C'},
+  {'*', '0', '#', 'D'}
+};
+byte rowPins[ROWS] = {13, 12, 14, 27}; 
+byte colPins[COLS] = {26, 25, 33, 32}; 
+Keypad customKeypad = Keypad(makeKeymap(hexaKeys), rowPins, colPins, ROWS, COLS);
+
+String inputString = "";
+bool isLocked = true;
+
+void setup() {
+  Serial.begin(115200);
+  
+  pinMode(relayPin, OUTPUT);
+  pinMode(buzzerPin, OUTPUT);
+  pinMode(greenLed, OUTPUT);
+  pinMode(redLed, OUTPUT);
+  
+  digitalWrite(relayPin, HIGH); // Active LOW relay usually, defaulting to locked
+  digitalWrite(redLed, HIGH);
+  digitalWrite(greenLed, LOW);
+
+  connectToWiFi();
+}
+
+void connectToWiFi() {
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nConnected to Wi-Fi");
+}
+
+// AES-128 decryption helper
+String decryptToken(String encryptedHex) {
+  int len = encryptedHex.length();
+  if (len % 2 != 0) return ""; 
+
+  unsigned char encryptedBytes[16];
+  unsigned char decryptedBytes[16];
+
+  for(int i = 0; i < 16; i++) {
+    sscanf(encryptedHex.substring(i*2, i*2+2).c_str(), "%hhx", &encryptedBytes[i]);
+  }
+
+  mbedtls_aes_context aes;
+  mbedtls_aes_init(&aes);
+  mbedtls_aes_setkey_dec(&aes, aes_key, 128);
+  mbedtls_aes_crypt_ecb(&aes, MBEDTLS_AES_DECRYPT, encryptedBytes, decryptedBytes);
+  mbedtls_aes_free(&aes);
+
+  char output[17];
+  memcpy(output, decryptedBytes, 16);
+  output[16] = '\0';
+  return String(output);
+}
+
+void loop() {
+  char customKey = customKeypad.getKey();
+  
+  if (customKey) {
+    tone(buzzerPin, 1000, 100);
+    if (customKey == '#') {
+      processInput();
+      inputString = ""; 
+    } else if (customKey == '*') {
+      inputString = ""; 
+    } else {
+      inputString += customKey;
+    }
+  }
+}
+
+void processInput() {
+  Serial.println("Decrypting and verifying: " + inputString);
+  
+  String decrypted = decryptToken(inputString);
+  
+  if (decrypted.startsWith("ACCESS_")) {
+    // Extract timestamp or ID for anti-replay (e.g., ACCESS_1243542)
+    Serial.println("Access Granted! Decrypted payload: " + decrypted);
+    triggerUnlock();
+  } else {
+    Serial.println("Invalid or Plagiarized Token");
+    triggerAlarm();
+  }
+}
+
+void triggerUnlock() {
+  digitalWrite(redLed, LOW);
+  digitalWrite(greenLed, HIGH);
+  digitalWrite(relayPin, LOW); // Unlock
+  tone(buzzerPin, 2000, 200);
+  delay(500);
+  tone(buzzerPin, 2000, 200);
+  
+  delay(5000); // Wait 5 seconds
+  
+  digitalWrite(relayPin, HIGH); // Lock again
+  digitalWrite(redLed, HIGH);
+  digitalWrite(greenLed, LOW);
+}
+
+void triggerAlarm() {
+  for(int i=0; i<3; i++) {
+    digitalWrite(redLed, HIGH);
+    tone(buzzerPin, 800, 300);
+    delay(300);
+    digitalWrite(redLed, LOW);
+    delay(300);
+  }
+  digitalWrite(redLed, HIGH);
+}
+</code></pre>
             </details>
         </div>
 
@@ -584,9 +1107,116 @@ void loop() {}</code></pre>
             <details>
                 <summary>🔌 Circuit Diagram & Code</summary>
                 <p>PCA9685 to 21/22. Servos to PCA9685 channels 0-3.</p>
-                <pre><code>#include &lt;BLEDevice.h&gt;
-#include &lt;Wire.h&gt;
-void setup() { Wire.begin(); }
-void loop() { /* BLE to Servo control */ }</code></pre>
+                <pre><code>#include <Arduino.h>
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
+#include <ESP32Servo.h>
+
+// BLE Service and Characteristic UUIDs (Replace with your unique UUIDs)
+#define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+#define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+
+// Pin definitions for Servo Motors
+const int servoPins[4] = {13, 12, 14, 27}; 
+Servo servos[4];
+
+// Global variables for BLE connection
+bool deviceConnected = false;
+BLECharacteristic* pCharacteristic;
+
+// Parse incoming BLE packets (Format expected: "A90 B45 C180 D0")
+void parseAndMove(String command) {
+  int angles[4];
+  int index = 0;
+  
+  // Simple delimiter parser to extract 4 angles
+  char* ptr = strtok((char*)command.c_str(), " ");
+  while (ptr != NULL && index < 4) {
+    angles[index++] = atoi(ptr + 1); // Skip the letter identifier (e.g., 'A')
+    ptr = strtok(NULL, " ");
+  }
+
+  // Write the parsed angles to corresponding servos
+  for (int i = 0; i < index; i++) {
+    // Constrain to valid servo range (0-180 degrees)
+    int validAngle = constrain(angles[i], 0, 180);
+    servos[i].write(validAngle);
+  }
+}
+
+// BLE Callback Class to handle connection state and incoming data
+class MyServerCallbacks: public BLEServerCallbacks {
+    void onConnect(BLEServer* pServer) {
+      deviceConnected = true;
+      Serial.println("BLE Client Connected");
+    }
+
+    void onDisconnect(BLEServer* pServer) {
+      deviceConnected = false;
+      Serial.println("BLE Client Disconnected");
+      pServer->startAdvertising(); // Restart advertising to allow reconnection
+    }
+};
+
+class MyCallbacks: public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic *pCharacteristic) {
+      std::string rxValue = pCharacteristic->getValue();
+      if (rxValue.length() > 0) {
+        String command = String(rxValue.c_str());
+        Serial.print("Received BLE Command: ");
+        Serial.println(command);
+        parseAndMove(command);
+      }
+    }
+};
+
+void setup() {
+  Serial.begin(115200);
+
+  // Attach servos
+  for (int i = 0; i < 4; i++) {
+    servos[i].setPeriodHertz(50);
+    servos[i].attach(servoPins[i], 500, 2400); // Standard microsecond ranges for servos
+  }
+
+  // Create the BLE Device
+  BLEDevice::init("Kinematic_Robot_Arm");
+
+  // Create the BLE Server
+  BLEServer *pServer = BLEDevice::createServer();
+  pServer->setCallbacks(new MyServerCallbacks());
+
+  // Create the BLE Service
+  BLEService *pService = pServer->createService(SERVICE_UUID);
+
+  // Create the BLE Characteristic
+  pCharacteristic = pService->createCharacteristic(
+                      CHARACTERISTIC_UUID,
+                      BLECharacteristic::PROPERTY_READ |
+                      BLECharacteristic::PROPERTY_WRITE |
+                      BLECharacteristic::PROPERTY_NOTIFY
+                    );
+
+  pCharacteristic->setCallbacks(new MyCallbacks());
+  pCharacteristic->addDescriptor(new BLE2902());
+
+  // Start the service
+  pService->start();
+
+  // Start advertising
+  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+  pAdvertising->addServiceUUID(SERVICE_UUID);
+  pServer->getAdvertising()->start();
+  
+  Serial.println("BLE Server is waiting for connections...");
+}
+
+void loop() {
+  // Loop is kept empty for real-time interrupt/callback based execution.
+  // This minimizes latency.
+}
+</code></pre>
             </details>
         </div>
