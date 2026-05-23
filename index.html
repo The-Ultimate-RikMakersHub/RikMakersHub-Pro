@@ -161,11 +161,144 @@ void loop() { /* Maze solving logic */ }</code></pre>
             <details>
                 <summary>🔌 Circuit Diagram & Code</summary>
                 <p>RFID SPI to D13-D9. Keypad to D8-D1. LCD via I2C.</p>
-                <pre><code>#include &lt;SPI.h&gt;
-#include &lt;MFRC522.h&gt;
-#include &lt;EEPROM.h&gt;
-void setup() { SPI.begin(); }
-void loop() { /* RFID/Keypad access check */ }</code></pre>
+                <pre><code>#include <EEPROM.h>
+#include <Keypad.h>
+#include <Servo.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <Crypto.h>
+#include <SHA256.h>
+
+// --- Configuration ---
+const byte ROWS = 4; 
+const byte COLS = 4; 
+char hexaKeys[ROWS][COLS] = {
+  {'1', '2', '3', 'A'},
+  {'4', '5', '6', 'B'},
+  {'7', '8', '9', 'C'},
+  {'*', '0', '#', 'D'}
+};
+byte rowPins[ROWS] = {2, 3, 4, 5}; 
+byte colPins[COLS] = {6, 7, 8, 9}; 
+
+Keypad customKeypad = Keypad(makeKeymap(hexaKeys), rowPins, colPins, ROWS, COLS);
+Servo lockServo;
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+// Master override code (Layer 2)
+const char* masterCode = "A1234";
+char inputBuffer[10];
+byte bufferIndex = 0;
+bool isAdminMode = false;
+
+// EEPROM addresses
+const int HASH_START_ADDR = 0;
+const int HASH_LENGTH = 32; // SHA-256 produces 32 bytes
+
+void setup() {
+  Serial.begin(9600);
+  lockServo.attach(10);
+  lockServo.write(0); // Locked position
+  
+  lcd.init();
+  lcd.backlight();
+  lcd.setCursor(0, 0);
+  lcd.print("System Ready");
+  delay(1000);
+  lcd.clear();
+}
+
+void loop() {
+  char customKey = customKeypad.getKey();
+  
+  if (customKey) {
+    handleKeyPress(customKey);
+  }
+}
+
+void handleKeyPress(char key) {
+  if (key == '#') { // Enter key
+    inputBuffer[bufferIndex] = '\0';
+    processInput();
+    bufferIndex = 0;
+  } else if (key == '*') { // Clear key
+    bufferIndex = 0;
+    lcd.clear();
+    lcd.print("Enter Pin:");
+  } else {
+    inputBuffer[bufferIndex] = key;
+    lcd.setCursor(bufferIndex, 1);
+    lcd.print('*');
+    bufferIndex++;
+  }
+}
+
+void processInput() {
+  // Check for Layer 2: Administrator Override
+  if (strcmp(inputBuffer, masterCode) == 0) {
+    isAdminMode = true;
+    lcd.clear();
+    lcd.print("Admin Mode");
+    delay(1000);
+    lcd.print("New Pin:");
+    bufferIndex = 0;
+    return;
+  }
+
+  if (isAdminMode) {
+    saveNewPassword(inputBuffer);
+    isAdminMode = false;
+    lcd.clear();
+    lcd.print("Pin Updated!");
+    delay(1000);
+    lcd.clear();
+  } else {
+    // Check for Layer 1: User Authentication
+    if (verifyPassword(inputBuffer)) {
+      lcd.clear();
+      lcd.print("Access Granted");
+      lockServo.write(90); // Unlock
+      delay(5000);
+      lockServo.write(0); // Lock
+      lcd.clear();
+    } else {
+      lcd.clear();
+      lcd.print("Access Denied");
+      delay(1000);
+      lcd.clear();
+    }
+  }
+}
+
+bool verifyPassword(char* inputPass) {
+  byte inputHash[HASH_LENGTH];
+  computeHash(inputPass, inputHash);
+
+  // Compare input hash with stored hash in EEPROM
+  for (int i = 0; i < HASH_LENGTH; i++) {
+    if (EEPROM.read(HASH_START_ADDR + i) != inputHash[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+void saveNewPassword(char* newPass) {
+  byte newHash[HASH_LENGTH];
+  computeHash(newPass, newHash);
+
+  // Save the new hash to EEPROM
+  for (int i = 0; i < HASH_LENGTH; i++) {
+    EEPROM.update(HASH_START_ADDR + i, newHash[i]);
+  }
+}
+
+void computeHash(const char* input, byte* output) {
+  SHA256 sha256;
+  sha256.update((uint8_t*)input, strlen(input));
+  sha256.finalize(output, HASH_LENGTH);
+}
+ </code></pre>
             </details>
         </div>
 
