@@ -129,7 +129,27 @@ void loop() {
         </div>
 
         <!-- PROJECTS 2-5: ARDUINO UNO HARDWARE MODES -->
-
+    <div class="project-card">
+            <h2>🧭 Project 3: Autonomous Flood-Fill Maze-Solving Rover</h2>
+            <div class="chip-container"><span class="chip">Arduino Uno</span><span class="chip">3x Ultrasonic Sensors</span><span class="chip">L293D</span></div>
+            <h3>🛠️ Components</h3>
+            <ul>
+                <li>Arduino Uno R3, 3x HC-SR04 Sensors, L293D Shield</li>
+                <li>4WD Chassis, 2x 18650 Batteries</li>
+            </ul>
+            <details>
+                <summary>🔌 Circuit Diagram & Code</summary>
+                <p>Sensors to D2-D3, D11-D12, A0-A1. Motors to Shield M1-M4.</p>
+                <pre><code>long readSensor(int trig, int echo) {
+  digitalWrite(trig, LOW); delayMicroseconds(2);
+  digitalWrite(trig, HIGH); delayMicroseconds(10);
+  digitalWrite(trig, LOW);
+  return pulseIn(echo, HIGH) / 58;
+}
+void loop() { /* Maze solving logic */ }</code></pre>
+            </details>
+        </div>
+       
         <div class="project-card">
             <h2>🔒 Project 4: EEPROM Encrypted Dual-Layer Security Safe</h2>
             <div class="chip-container"><span class="chip">Arduino Uno</span><span class="chip">MFRC522</span><span class="chip">Keypad</span></div>
