@@ -140,13 +140,71 @@ void loop() {
             <details>
                 <summary>🔌 Circuit Diagram & Code</summary>
                 <p>Sensors to D2-D3, D11-D12, A0-A1. Motors to Shield M1-M4.</p>
-                <pre><code>long readSensor(int trig, int echo) {
-  digitalWrite(trig, LOW); delayMicroseconds(2);
-  digitalWrite(trig, HIGH); delayMicroseconds(10);
-  digitalWrite(trig, LOW);
-  return pulseIn(echo, HIGH) / 58;
+                <pre><code>#include <Arduino.h>
+
+// Maze Dimensions
+const int SIZE = 5; 
+int maze[SIZE][SIZE];
+int walls[SIZE][SIZE]; // Bitmask: 1=North, 2=East, 4=South, 8=West
+
+// Robot State
+int x = 0, y = 0; // Current position
+int dir = 0;      // 0:North, 1:East, 2:South, 3:West
+
+// Pin Definitions
+#define TRIG_F 2
+#define ECHO_F 3
+// ... Define other sensors and motor pins ...
+
+void setup() {
+  Serial.begin(9600);
+  initializeMaze();
 }
-void loop() { /* Maze solving logic */ }</code></pre>
+
+void loop() {
+  updateWalls();      // Check sensors for walls
+  floodFill(2, 2);    // Goal is cell (2,2)
+  moveToBestCell();   // Determine next move based on lowest neighboring value
+}
+
+// 1. Initialize maze with distances to goal (Manhattan distance)
+void initializeMaze() {
+  for (int i = 0; i < SIZE; i++) {
+    for (int j = 0; j < SIZE; j++) {
+      maze[i][j] = abs(i - 2) + abs(j - 2); 
+    }
+  }
+}
+
+// 2. Flood Fill logic to update cell values
+void floodFill(int targetX, int targetY) {
+  // Simple version: Iteratively update cell values based on neighbors
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (int i = 0; i < SIZE; i++) {
+      for (int j = 0; j < SIZE; j++) {
+        if (i == targetX && j == targetY) continue;
+        
+        int minDist = 255;
+        // Check North (if no wall)
+        if (!(walls[i][j] & 1) && i > 0) minDist = min(minDist, maze[i-1][j]);
+        // ... Check East, South, West ...
+        
+        if (maze[i][j] != minDist + 1) {
+          maze[i][j] = minDist + 1;
+          changed = true;
+        }
+      }
+    }
+  }
+}
+
+// 3. Movement logic
+void moveToBestCell() {
+  // Check neighbors, find smallest value in 'maze' array, and command motors
+}
+</code></pre>
             </details>
         </div>
        
