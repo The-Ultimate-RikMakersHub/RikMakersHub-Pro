@@ -138,10 +138,69 @@ void loop() {
                 <summary>🔌 Circuit Diagram & Code</summary>
                 <p>MPU6050 SCL/SDA to A5/A4. L298N ENA/ENB to D5/D6, IN1-IN4 to D7-D10.</p>
                 <pre><code>// PID Core Balancing Logic Snippet
-float Kp = 22.5, Ki = 140.0, Kd = 1.8;
-float input, output, setpoint = 0;
-void setup() { Wire.begin(); }
-void loop() { /* High speed angle adjustments */ }</code></pre>
+ #include <Wire.h>
+#include <MPU6050.h>
+
+MPU6050 mpu;
+int16_t ax, ay, az, gx, gy, gz;
+
+// PID Constants - These MUST be tuned for your specific robot
+double Kp = 25, Ki = 120, Kd = 1.5;
+double setPoint = 0; // The angle where your robot is perfectly balanced
+
+double input, output, lastInput;
+double ITerm, lastTime;
+int sampleTime = 10; // 10ms
+
+// Motor Pins (L298N example)
+int ENA = 3, IN1 = 4, IN2 = 5;
+int ENB = 6, IN3 = 7, IN4 = 8;
+
+void setup() {
+  Wire.begin();
+  mpu.initialize();
+  pinMode(ENA, OUTPUT); pinMode(IN1, OUTPUT); pinMode(IN2, OUTPUT);
+  pinMode(ENB, OUTPUT); pinMode(IN3, OUTPUT); pinMode(IN4, OUTPUT);
+}
+
+void loop() {
+  unsigned long now = millis();
+  int timeChange = (now - lastTime);
+
+  if(timeChange >= sampleTime) {
+    // 1. Get Angle from MPU6050 (Simplified)
+    mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
+    input = atan2(ax, az) * 180 / PI; // Simple tilt angle calculation
+
+    // 2. PID Calculation
+    double error = setPoint - input;
+    ITerm += (Ki * error);
+    double dInput = (input - lastInput);
+    
+    output = Kp * error + ITerm - Kd * dInput;
+
+    // 3. Drive Motors
+    driveMotors(output);
+
+    // Save variables for next loop
+    lastInput = input;
+    lastTime = now;
+  }
+}
+
+void driveMotors(double pidValue) {
+  int speed = constrain(abs(pidValue), 0, 255);
+  if (pidValue > 0) { // Forward
+    digitalWrite(IN1, HIGH); digitalWrite(IN2, LOW);
+    digitalWrite(IN3, HIGH); digitalWrite(IN4, LOW);
+  } else { // Backward
+    digitalWrite(IN1, LOW); digitalWrite(IN2, HIGH);
+    digitalWrite(IN3, LOW); digitalWrite(IN4, HIGH);
+  }
+  analogWrite(ENA, speed);
+  analogWrite(ENB, speed);
+}
+</code></pre>
             </details>
         </div>
 
