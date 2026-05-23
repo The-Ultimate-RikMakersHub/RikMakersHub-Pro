@@ -215,13 +215,63 @@ void driveMotors(double pidValue) {
             <details>
                 <summary>🔌 Circuit Diagram & Code</summary>
                 <p>Sensors to D2-D3, D11-D12, A0-A1. Motors to Shield M1-M4.</p>
-                <pre><code>long readSensor(int trig, int echo) {
-  digitalWrite(trig, LOW); delayMicroseconds(2);
-  digitalWrite(trig, HIGH); delayMicroseconds(10);
-  digitalWrite(trig, LOW);
-  return pulseIn(echo, HIGH) / 58;
+                <pre><code>#include <Arduino.h>
+
+// Maze size (Uno RAM can handle roughly 16x16 max)
+const int MAZE_SIZE = 4;
+int maze[MAZE_SIZE][MAZE_SIZE];
+bool walls[MAZE_SIZE][MAZE_SIZE][4]; // [x][y][North, East, South, West]
+
+// Current robot state
+int curX = 0, curY = 0;
+int orientation = 0; // 0: North, 1: East, 2: South, 3: West
+
+// Function to "Flood" the maze with distances to (targetX, targetY)
+void floodFill(int targetX, int targetY) {
+  // Initialize all cells to high value
+  for(int i=0; i<MAZE_SIZE; i++)
+    for(int j=0; j<MAZE_SIZE; j++) maze[i][j] = 255;
+
+  maze[targetX][targetY] = 0;
+  bool changed = true;
+
+  while(changed) {
+    changed = false;
+    for(int x=0; x<MAZE_SIZE; x++) {
+      for(int y=0; y<MAZE_SIZE; y++) {
+        if(maze[x][y] == 255) continue;
+        
+        // Update neighbors if no wall exists
+        updateNeighbor(x, y, x, y+1, 0, changed); // North
+        updateNeighbor(x, y, x+1, y, 1, changed); // East
+        // ... repeat for South and West
+      }
+    }
+  }
 }
-void loop() { /* Maze solving logic */ }</code></pre>
+
+void updateNeighbor(int x, int y, int nx, int ny, int wallDir, bool &changed) {
+  if(nx >= 0 && nx < MAZE_SIZE && ny >= 0 && ny < MAZE_SIZE) {
+    if(!walls[x][y][wallDir] && maze[nx][ny] > maze[x][y] + 1) {
+      maze[nx][ny] = maze[x][y] + 1;
+      changed = true;
+    }
+  }
+}
+
+void setup() {
+  Serial.begin(9600);
+  // Initialize motor and sensor pins here
+  floodFill(MAZE_SIZE-1, MAZE_SIZE-1); // Target is far corner
+}
+
+void loop() {
+  // 1. Read Sensors (Front, Left, Right)
+  // 2. Update 'walls' array based on sensors
+  // 3. floodFill(targetX, targetY)
+  // 4. Move to neighbor with smallest maze[x][y] value
+}
+</code></pre>
             </details>
         </div>
 
@@ -236,11 +286,193 @@ void loop() { /* Maze solving logic */ }</code></pre>
             <details>
                 <summary>🔌 Circuit Diagram & Code</summary>
                 <p>RFID SPI to D13-D9. Keypad to D8-D1. LCD via I2C.</p>
-                <pre><code>#include &lt;SPI.h&gt;
-#include &lt;MFRC522.h&gt;
-#include &lt;EEPROM.h&gt;
-void setup() { SPI.begin(); }
-void loop() { /* RFID/Keypad access check */ }</code></pre>
+                <pre><code>#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <EEPROM.h>
+#include <Servo.h>
+#include <Keypad.h>
+
+// --- Security Configuration ---
+const byte ROWS = 4;
+const byte COLS = 4;
+char keys[ROWS][COLS] = {
+  {'1','2','3','A'},
+  {'4','5','6','B'},
+  {'7','8','9','C'},
+  {'*','0','#','D'}
+};
+byte rowPins[ROWS] = {5, 4, 3, 2}; // Connect to the row pinouts of the keypad
+byte colPins[COLS] = {A1, A0, 7, 6}; // Connect to the column pinouts of the keypad
+
+Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+Servo lockServo;
+
+// --- EEPROM Addresses ---
+const int addr_Layer1 = 10; // Address for User PIN
+const int addr_Layer2 = 20; // Address for Master/Admin PIN
+
+// --- State Variables ---
+char userPIN[7] = "123456"; // Default User PIN
+char adminKey[7] = "654321"; // Default Master Key
+char inputBuffer[7];
+byte inputIndex = 0;
+bool isLocked = true;
+int failedAttempts = 0;
+
+void setup() {
+  lockServo.attach(9);
+  pinMode(8, OUTPUT); // Buzzer pin
+  
+  lcd.init();
+  lcd.backlight();
+  
+  // Initialize or Load PINs
+  initializeEEPROM();
+  loadPINsFromEEPROM();
+
+  lockSafe();
+  displayHome();
+}
+
+void loop() {
+  char key = keypad.getKey();
+
+  if (key) {
+    tone(8, 1000, 50); // Key press feedback
+    
+    if (key == '#') {
+      processInput();
+    } 
+    else if (key == '*') {
+      clearInput();
+    } 
+    else {
+      if (isLocked && inputIndex < 6) {
+        inputBuffer[inputIndex] = key;
+        lcd.setCursor(inputIndex + 5, 1);
+        lcd.print("*");
+        inputIndex++;
+      }
+    }
+  }
+}
+
+void initializeEEPROM() {
+  if (EEPROM.read(addr_Layer1) == 0xFF) { 
+    // EEPROM is blank, write default passwords
+    saveToEEPROM(addr_Layer1, userPIN);
+    saveToEEPROM(addr_Layer2, adminKey);
+  }
+}
+
+void saveToEEPROM(int address, const char* pinString) {
+  for (int i = 0; i < 6; i++) {
+    EEPROM.write(address + i, pinString[i]);
+  }
+}
+
+void loadPINsFromEEPROM() {
+  for (int i = 0; i < 6; i++) {
+    userPIN[i] = EEPROM.read(addr_Layer1 + i);
+    adminKey[i] = EEPROM.read(addr_Layer2 + i);
+  }
+  userPIN[6] = '\0';
+  adminKey[6] = '\0';
+}
+
+void processInput() {
+  inputBuffer[inputIndex] = '\0'; // Null-terminate the input
+  
+  if (isLocked) {
+    if (strcmp(inputBuffer, userPIN) == 0) {
+      grantAccess("Layer 1 Verified", 90); // Unlock servo to 90 degrees
+    } 
+    else if (strcmp(inputBuffer, adminKey) == 0) {
+      grantAccess("Admin Override", 90);
+    } 
+    else {
+      failedAttempts++;
+      handleFailedAttempt();
+    }
+  } else {
+    // If unlocked, treat any valid input as a request to lock
+    if (strcmp(inputBuffer, userPIN) == 0 || strcmp(inputBuffer, adminKey) == 0) {
+      lockSafe();
+    } else {
+      lcd.clear();
+      lcd.print("Invalid Entry");
+      delay(1000);
+      displayHome();
+    }
+  }
+  clearInput();
+}
+
+void grantAccess(const char* message, int angle) {
+  lcd.clear();
+  lcd.print("Access Granted");
+  lcd.setCursor(0, 1);
+  lcd.print(message);
+  
+  lockServo.write(angle); // Rotate servo
+  digitalWrite(8, HIGH); // Beep
+  delay(500);
+  digitalWrite(8, LOW);
+  
+  isLocked = false;
+  failedAttempts = 0;
+  delay(1500);
+  
+  lcd.clear();
+  lcd.print("Enter to Lock");
+}
+
+void handleFailedAttempt() {
+  if (failedAttempts >= 3) {
+    lcd.clear();
+    lcd.print("SYSTEM LOCKED");
+    // Trigger lockdown for 15 seconds
+    for (int i = 15; i > 0; i--) {
+      lcd.setCursor(14, 1);
+      lcd.print(i);
+      tone(8, 2000, 500);
+      delay(1000);
+    }
+    failedAttempts = 0;
+  } else {
+    lcd.clear();
+    lcd.print("Access Denied!");
+    lcd.setCursor(0, 1);
+    lcd.print("Attempts: ");
+    lcd.print(failedAttempts);
+    digitalWrite(8, HIGH); // Error Buzzer
+    delay(1000);
+    digitalWrite(8, LOW);
+  }
+  displayHome();
+}
+
+void lockSafe() {
+  lcd.clear();
+  lcd.print("Safe Locked");
+  lockServo.write(0); // Rotate servo back to 0 degrees
+  isLocked = true;
+  displayHome();
+}
+
+void displayHome() {
+  lcd.clear();
+  lcd.print("Enter PIN:");
+  lcd.setCursor(5, 1);
+}
+
+void clearInput() {
+  memset(inputBuffer, 0, sizeof(inputBuffer));
+  inputIndex = 0;
+  displayHome();
+}
+</code></pre>
             </details>
         </div>
 
