@@ -2,7 +2,7 @@
 
 Welcome to the official repository for RikMakersHub Pro! This space hosts microcontroller code, hardware definitions, and engineering scripts.
 
-👉 **For the complete interactive wiring layout, step-by-step pin connections, and full hardware component lists, visit the official platform: [RikMakersHub Web Platform](https://rikmakershub.github.io/RikMakersHub-Pro/)**
+👉 **For the complete interactive wiring layout, codes verified by the developer, and full hardware component lists, visit the official platform: [RikMakersHub Web Platform](https://rikmakershub.github.io/RikMakersHub-Pro/)**
 
 ---
 
